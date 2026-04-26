@@ -33,7 +33,7 @@ sudo ./setup-nextcloud-hpb.sh
 sudo ./setup-nextcloud-hpb.sh ./settings.sh
 ```
 
-See `settings.sh` for variables. `Makefile` target `install` runs the same script.
+See the commented **`settings.sh`** in this repository for every tunable option and for how **interactive** runs differ from **unattended** runs. The `Makefile` `install` target runs the same script.
 
 ## License
 

@@ -230,10 +230,14 @@ function signaling_build_nextcloud-spreed-signaling() {
 		if ! run_with_progress "[Building n-s-s] Extracting source archive" "tar -xf n-s-s-master.tar.gz"; then
 			signaling_build_nss_fail "Extraction of the source archive failed (disk full, corrupt download, or missing tar). See log for details."
 		fi
-		NSS_SRC_DIR=$(tar -tf n-s-s-master.tar.gz 2>/dev/null | head -1 | tr -d '\r' | cut -d/ -f1)
-		if [ -z "$NSS_SRC_DIR" ] || [ ! -d "$NSS_SRC_DIR" ]; then
-			signaling_build_nss_fail "Could not find extracted source tree (expected a top-level directory in the GitHub archive). Re-run after removing n-s-s-master.tar.gz in this directory."
+		# Resolve source dir on disk (do not use head/cut/tar -tf here: with set -e a missing head(1) exits the whole script with no message).
+		shopt -s nullglob
+		local -a _nss_glob=( nextcloud-spreed-signaling-*/ )
+		shopt -u nullglob
+		if [ "${#_nss_glob[@]}" -ne 1 ] || [ ! -d "${_nss_glob[0]}" ]; then
+			signaling_build_nss_fail "Expected exactly one nextcloud-spreed-signaling-* directory after extract; found ${#_nss_glob[@]}. Remove n-s-s-master.tar.gz and any nextcloud-spreed-signaling-* dirs, then retry."
 		fi
+		NSS_SRC_DIR=${_nss_glob[0]%/}
 	fi
 
 	log "[Building n-s-s] Building sources (Go will download module dependencies; outbound HTTPS to proxy.golang.org and VCS hosts must be allowed)…"

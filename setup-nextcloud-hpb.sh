@@ -279,13 +279,12 @@ trap 'printf "%s" "$normal"' EXIT INT TERM HUP
 
 function log() {
 	# Strip ANSI color codes before writing to log file
-	echo -e "$@" | sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" >> "$LOGFILE_PATH"
+	echo -e "$@" | sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" >> "$LOGFILE_PATH" 2>/dev/null || true
 	echo -e "${blue}$@${normal}"
 }
 
 function log_err() {
-	# Strip ANSI color codes before writing to log file
-	echo -e "$@" | sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" >> "$LOGFILE_PATH"
+	echo -e "$@" | sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" >> "$LOGFILE_PATH" 2>/dev/null || true
 	echo -e "${red}✗ Error: $@${normal}" >&2
 }
 

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Upstream project (reference)
+    url: https://github.com/sunweaver/nextcloud-high-performance-backend-setup
+    about: Original upstream repository (different OS and feature set).

@@ -1,0 +1,26 @@
+# Example Traefik v3 file-provider fragment for Nextcloud Talk HPB (nextcloud-spreed-signaling).
+# Merge this into your dynamic configuration and fix entryPoints / certificate resolvers.
+#
+# Signaling listens on this machine at SIGNALING_HTTP_LISTEN (default 127.0.0.1:8080).
+# - Traefik on the SAME host: http://127.0.0.1:8080 works.
+# - Traefik elsewhere: set listen to 0.0.0.0:8080 (or a private IP) in settings.sh and
+#   point servers[].url at http://<THIS_HOST_REACHABLE_IP>:8080 ; restrict access in firewall.
+#
+# Nextcloud Talk admin expects the HPB URL to be like: https://<SERVER_FQDN>/standalone-signaling
+
+http:
+  routers:
+    talk-hpb:
+      rule: "Host(`<SERVER_FQDN>`) && PathPrefix(`/standalone-signaling`)"
+      entryPoints:
+        - websecure
+      service: talk-hpb-signaling
+      tls: {}
+      # certResolver: letsencrypt   # your ACME resolver name
+
+  services:
+    talk-hpb-signaling:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: "<SIGNALING_HTTP_PROXY_URL>"

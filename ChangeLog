@@ -1,0 +1,15 @@
+ChangeLog — Enterprise Linux fork (Nextcloud Talk HPB)
+=======================================================
+
+This file lists changes for this fork only. For the full history of the
+original upstream project, see:
+https://github.com/sunweaver/nextcloud-high-performance-backend-setup/blob/main/ChangeLog
+
+2026-04-26
+
+	* Align templates, issue forms, and comments with Fedora / RHEL-family
+	  scope (firewalld, dnf, nginx under /etc/nginx/conf.d).
+	* Remove legacy third-party nginx include placeholders and unused
+	  outbound-mail templates from the Talk-only tree.
+	* Replace legacy index.html OS label with Enterprise Linux version.
+	* Drop dead commented UFW hooks from the main installer.

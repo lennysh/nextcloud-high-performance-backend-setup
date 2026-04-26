@@ -51,7 +51,7 @@ function run_with_progress() {
 	local temp_log=$(mktemp)
 
 	# Log the command being executed (helpful for debugging)
-	echo "[$(date '+%Y-%m-%d %H:%M:%S')] Running: $command" >> "$LOGFILE_PATH"
+	{ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Running: $command"; } >> "$LOGFILE_PATH" 2>/dev/null || true
 
 	# Start the command in background, redirecting output to temp log
 	eval "$command" > "$temp_log" 2>&1 &
@@ -80,15 +80,22 @@ function run_with_progress() {
 		log_err "Full log available in: $LOGFILE_PATH"
 	fi
 
-	# Always append to log file
-	cat "$temp_log" >> "$LOGFILE_PATH"
-	echo "" >> "$LOGFILE_PATH"  # Add blank line separator
+	# Always append to log file (do not fail the install if the log is not writable)
+	cat "$temp_log" >> "$LOGFILE_PATH" 2>/dev/null || true
+	echo "" >> "$LOGFILE_PATH" 2>/dev/null || true
 
 	# Cleanup
 	rm -f "$temp_log"
 
 	# Return the exit code (allows || true pattern)
 	return $exit_code
+}
+
+# Clear failure exit after a nextcloud-spreed-signaling build step (run_with_progress already printed the tail of stderr).
+function signaling_build_nss_fail() {
+	log_err "nextcloud-spreed-signaling: $*"
+	log_err "Full transcript: $LOGFILE_PATH"
+	exit 1
 }
 
 function signaling_ensure_epel_repos() {
@@ -211,27 +218,38 @@ function signaling_build_nextcloud-spreed-signaling() {
 	fi
 
 	log "[Building n-s-s] Downloading sources…"
-	rm n-s-s-master.tar.gz 2>&1 | tee -a $LOGFILE_PATH || true
+	is_dry_run || rm -f n-s-s-master.tar.gz
 	if ! is_dry_run; then
-		run_with_progress "[Building n-s-s] Downloading source archive" "wget https://github.com/strukturag/nextcloud-spreed-signaling/archive/refs/heads/master.tar.gz -O n-s-s-master.tar.gz"
+		if ! run_with_progress "[Building n-s-s] Downloading source archive" "wget -nv https://github.com/strukturag/nextcloud-spreed-signaling/archive/refs/heads/master.tar.gz -O n-s-s-master.tar.gz"; then
+			signaling_build_nss_fail "Download of the signaling server source failed (see log). Check network and TLS access to github.com."
+		fi
 	fi
 
 	log "[Building n-s-s] Extracting sources…"
 	if ! is_dry_run; then
-		run_with_progress "[Building n-s-s] Extracting source archive" "tar -xf n-s-s-master.tar.gz"
+		if ! run_with_progress "[Building n-s-s] Extracting source archive" "tar -xf n-s-s-master.tar.gz"; then
+			signaling_build_nss_fail "Extraction of the source archive failed (disk full, corrupt download, or missing tar). See log for details."
+		fi
+		NSS_SRC_DIR=$(tar -tf n-s-s-master.tar.gz 2>/dev/null | head -1 | tr -d '\r' | cut -d/ -f1)
+		if [ -z "$NSS_SRC_DIR" ] || [ ! -d "$NSS_SRC_DIR" ]; then
+			signaling_build_nss_fail "Could not find extracted source tree (expected a top-level directory in the GitHub archive). Re-run after removing n-s-s-master.tar.gz in this directory."
+		fi
 	fi
 
-	log "[Building n-s-s] Building sources…"
+	log "[Building n-s-s] Building sources (Go will download module dependencies; outbound HTTPS to proxy.golang.org and VCS hosts must be allowed)…"
 	if ! is_dry_run; then
-		run_with_progress "[Building n-s-s] Compiling (this may take several minutes)" "make -C nextcloud-spreed-signaling-master"
+		# The Makefile runs go build; modules are fetched from the network on first build.
+		if ! run_with_progress "[Building n-s-s] Compiling (this may take several minutes)" "make -C \"${NSS_SRC_DIR}\""; then
+			signaling_build_nss_fail "Compile failed. This host needs working outbound HTTPS (Go modules). See log; on limited networks set GOPROXY and try again, or pre-populate the module cache."
+		fi
 	fi
 
 	log "[Building n-s-s] Stopping potentially running service…"
-	systemctl stop nextcloud-spreed-signaling | tee -a $LOGFILE_PATH || true
+	systemctl stop nextcloud-spreed-signaling 2>&1 | tee -a "$LOGFILE_PATH" || true
 
 	log "[Building n-s-s] Copying built binary into /usr/local/bin/nextcloud-spreed-signaling-server…"
-	cp -v nextcloud-spreed-signaling-master/bin/signaling \
-		/usr/local/bin/nextcloud-spreed-signaling-server | tee -a $LOGFILE_PATH
+	is_dry_run || cp -v "$NSS_SRC_DIR"/bin/signaling \
+		/usr/local/bin/nextcloud-spreed-signaling-server 2>&1 | tee -a "$LOGFILE_PATH"
 
 	deploy_file "$TMP_DIR_PATH"/signaling/nextcloud-spreed-signaling.service \
 		/lib/systemd/system/nextcloud-spreed-signaling.service || true

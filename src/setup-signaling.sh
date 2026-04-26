@@ -143,8 +143,8 @@ function install_signaling() {
 	done
 
 	log "Installing Signaling build dependencies…"
-	is_dry_run || dnf install $DNF_PARAMS wget curl jq protobuf-compiler gcc gcc-c++ make golang-bin git \
-		openssl-devel 2>&1 | tee -a "$LOGFILE_PATH"
+	is_dry_run || dnf install $DNF_PARAMS wget curl tar jq protobuf-compiler gcc gcc-c++ make golang-bin git \
+		openssl openssl-devel 2>&1 | tee -a "$LOGFILE_PATH"
 
 	is_dry_run "Would have built nextcloud-spreed-signaling now…" || signaling_build_nextcloud-spreed-signaling
 

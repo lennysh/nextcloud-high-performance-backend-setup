@@ -7,13 +7,24 @@
 #   point servers[].url at http://<THIS_HOST_REACHABLE_IP>:8080 ; restrict access in firewall.
 #
 # Nextcloud Talk admin expects the HPB URL to be like: https://<SERVER_FQDN>/standalone-signaling
+#
+# Strip the URL prefix before proxying — same as nginx "location /standalone-signaling/ { proxy_pass …/; }".
+# Without this, Traefik forwards /standalone-signaling/... to the backend, which does not serve that path.
 
 http:
+  middlewares:
+    talk-hpb-stripprefix:
+      stripPrefix:
+        prefixes:
+          - "/standalone-signaling"
+
   routers:
     talk-hpb:
       rule: "Host(`<SERVER_FQDN>`) && PathPrefix(`/standalone-signaling`)"
       entryPoints:
         - websecure
+      middlewares:
+        - talk-hpb-stripprefix
       service: talk-hpb-signaling
       tls: {}
       # certResolver: letsencrypt   # your ACME resolver name

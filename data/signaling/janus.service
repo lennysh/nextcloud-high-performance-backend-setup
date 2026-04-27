@@ -6,8 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Matches typical EPEL layouts; "install from source" path uses the same /usr tree.
-ExecStart=/usr/bin/janus -F
+# Janus 1.2+: -F is --configs-folder (path required); it is not "foreground".
+# Omit --daemon/-b so Janus stays in the foreground for Type=simple.
+ExecStart=/usr/bin/janus -F /etc/janus
 Restart=on-failure
 RestartSec=3s
 LimitNOFILE=65536

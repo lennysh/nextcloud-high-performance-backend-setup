@@ -6,10 +6,10 @@
 #
 # Interactive vs unattended
 # -------------------------
-# • UNATTENDED_INSTALL=false (default): the whiptail checklist controls what gets
-#   installed (SHOULD_INSTALL_* in this file for components are reset and ignored).
-#   BEHIND_EXISTING_REVERSE_PROXY and SHOULD_INSTALL_COTURN still pre-check the
-#   matching rows in the TUI; your selections in the checklist apply when you OK.
+# • UNATTENDED_INSTALL=false (default): a five-line whiptail checklist maps 1:1
+#   to the SHOULD_INSTALL_* and BEHIND_* flags (saved above are reset, then
+#   defaults for each line are taken from the values you set here so the TUI
+#   matches this file; press OK to apply the checkmarks you see).
 # • UNATTENDED_INSTALL=true: no checklist; the SHOULD_INSTALL_* variables below
 #   must be set to describe the install. You must also set DRY_RUN, and every
 #   value that show_dialogs() would otherwise ask for (see “Required for

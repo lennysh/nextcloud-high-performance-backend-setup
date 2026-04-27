@@ -517,7 +517,11 @@ function main() {
 
 	# Let's check if we should open dialogs.
 	if [ "$UNATTENDED_INSTALL" != true ]; then
-		# Preserve settings.sh defaults for TUI (reset below clears these).
+		# Preserve settings.sh (reset below clears SHOULD_INSTALL_*).
+		_CHECKLIST_PRESET_SIGNALING="${SHOULD_INSTALL_SIGNALING:-false}"
+		_CHECKLIST_PRESET_FIREWALLD="${SHOULD_INSTALL_FIREWALLD:-false}"
+		_CHECKLIST_PRESET_NGINX="${SHOULD_INSTALL_NGINX:-false}"
+		_CHECKLIST_PRESET_CERTBOT="${SHOULD_INSTALL_CERTBOT:-false}"
 		_CHECKLIST_PRESET_COTURN="${SHOULD_INSTALL_COTURN:-false}"
 		SHOULD_INSTALL_FIREWALLD=false
 		SHOULD_INSTALL_SIGNALING=false
@@ -525,25 +529,40 @@ function main() {
 		SHOULD_INSTALL_NGINX=false
 		SHOULD_INSTALL_COTURN=false
 
-		CHK1_DEFAULT=ON
-		CHK2_DEFAULT=OFF
-		CHK3_DEFAULT=OFF
-		if [ "$BEHIND_EXISTING_REVERSE_PROXY" = true ]; then
-			CHK1_DEFAULT=OFF
-			CHK3_DEFAULT=ON
+		# Five rows map to the same flags as settings.sh / unattended mode.
+		_DEFAULT_HPB=OFF
+		_DEFAULT_FW=OFF
+		_DEFAULT_WEB=OFF
+		_DEFAULT_TURN=OFF
+		_DEFAULT_PROXY=OFF
+		if [ "$_CHECKLIST_PRESET_SIGNALING" = true ]; then
+			_DEFAULT_HPB=ON
+		fi
+		if [ "$_CHECKLIST_PRESET_FIREWALLD" = true ]; then
+			_DEFAULT_FW=ON
+		fi
+		if [ "$_CHECKLIST_PRESET_NGINX" = true ] && [ "$_CHECKLIST_PRESET_CERTBOT" = true ] \
+			&& [ "$BEHIND_EXISTING_REVERSE_PROXY" != true ]; then
+			_DEFAULT_WEB=ON
 		fi
 		if [ "$_CHECKLIST_PRESET_COTURN" = true ]; then
-			CHK2_DEFAULT=ON
+			_DEFAULT_TURN=ON
+		fi
+		if [ "$BEHIND_EXISTING_REVERSE_PROXY" = true ]; then
+			_DEFAULT_HPB=ON
+			_DEFAULT_WEB=OFF
+			_DEFAULT_PROXY=ON
 		fi
 
 		CHOICES=$(whiptail --title "Nextcloud Talk HPB (Enterprise Linux)" --separate-output \
-			--checklist "Core: signaling (built), NATS, Janus. nginx+Certbot OR Traefik/your proxy.\n$(
-			)firewalld opens HTTP/HTTPS when nginx is enabled (and coturn ports if selected).\n\n$(
-			)Optional: local coturn; optional: skip local TLS (external reverse proxy).\n$(
-			)Checkmarks are prefilled from settings.sh when you passed it on the command line." 20 90 3 \
-			"1" "Talk HPB + firewalld + nginx + Certbot on this host" "$CHK1_DEFAULT" \
-			"2" "Local coturn (TURN/STUN)" "$CHK2_DEFAULT" \
-			"3" "Behind Traefik / external HTTPS (skip nginx & Certbot here)" "$CHK3_DEFAULT" \
+			--checklist "Select components (matches settings.sh / unattended when you pre-filled it).\n$(
+			)• “Talk stack” = signaling (source), NATS, Janus. • “web” = nginx + Certbot on this host.\n$(
+			)• External proxy: no nginx/Certbot here; point Traefik etc. at signaling (see tmp/reverse-proxy/)." 24 92 5 \
+			"hpb" "Talk stack: nextcloud-spreed-signaling, NATS, Janus" "$_DEFAULT_HPB" \
+			"fw"  "firewalld (open HTTP/HTTPS and Talk-related ports)" "$_DEFAULT_FW" \
+			"web" "nginx + Certbot (Let’s Encrypt for this host’s FQDN)" "$_DEFAULT_WEB" \
+			"turn" "Local coturn (TURN/STUN on this host)" "$_DEFAULT_TURN" \
+			"pxy" "Behind Traefik / external HTTPS only (no nginx or Certbot here)" "$_DEFAULT_PROXY" \
 			3>&1 1>&2 2>&3 || true)
 
 		if [ -z "$CHOICES" ]; then
@@ -552,41 +571,55 @@ function main() {
 		else
 			for CHOICE in $CHOICES; do
 				case "$CHOICE" in
-				"1")
-					log "Installing Talk HPB with firewalld: signaling, NATS, Janus, nginx, Certbot."
-					SHOULD_INSTALL_FIREWALLD=true
+				"hpb")
+					log "Talk HPB stack selected: nextcloud-spreed-signaling, NATS, Janus."
 					SHOULD_INSTALL_SIGNALING=true
+					;;
+				"fw")
+					log "firewalld will be configured for web / Talk as needed."
+					SHOULD_INSTALL_FIREWALLD=true
+					;;
+				"web")
+					log "nginx and Certbot will be installed for TLS on this host."
 					SHOULD_INSTALL_NGINX=true
 					SHOULD_INSTALL_CERTBOT=true
 					;;
-				"2")
+				"turn")
 					log "Local coturn (TURN/STUN) will be installed."
 					SHOULD_INSTALL_COTURN=true
 					;;
-				"3")
-					log "Using an external reverse proxy (Traefik, Caddy, etc.): nginx and Certbot will be skipped on this host."
+				"pxy")
+					log "Using an external reverse proxy: nginx and Certbot are skipped on this host."
 					BEHIND_EXISTING_REVERSE_PROXY=true
 					;;
 				*)
-					log_err "Unsupported service $CHOICE!" >&2
+					log_err "Unsupported checklist tag: $CHOICE" >&2
 					exit 1
 					;;
 				esac
 			done
 		fi
 		if [ "$SHOULD_INSTALL_COTURN" = true ] && [ "$SHOULD_INSTALL_SIGNALING" != true ]; then
-			log "Local coturn requires the Talk HPB stack; enabling it."
-			SHOULD_INSTALL_FIREWALLD=true
+			log "Local coturn requires the Talk stack; enabling signaling and firewalld."
 			SHOULD_INSTALL_SIGNALING=true
+			SHOULD_INSTALL_FIREWALLD=true
 			if [ "$BEHIND_EXISTING_REVERSE_PROXY" != true ]; then
 				SHOULD_INSTALL_NGINX=true
 				SHOULD_INSTALL_CERTBOT=true
 			fi
 		fi
 		if [ "$BEHIND_EXISTING_REVERSE_PROXY" = true ] && [ "$SHOULD_INSTALL_SIGNALING" != true ]; then
-			log "External proxy mode requires the Talk stack; enabling signaling + firewalld."
-			SHOULD_INSTALL_FIREWALLD=true
+			log "External proxy mode needs the Talk stack on this host; enabling signaling and firewalld."
 			SHOULD_INSTALL_SIGNALING=true
+			SHOULD_INSTALL_FIREWALLD=true
+		fi
+		# Sensible defaults: web stack implies Talk + firewall for this project.
+		if [ "$SHOULD_INSTALL_NGINX" = true ] || [ "$SHOULD_INSTALL_CERTBOT" = true ]; then
+			if [ "$SHOULD_INSTALL_SIGNALING" != true ]; then
+				log "TLS proxy role requires the Talk stack; enabling signaling and firewalld."
+				SHOULD_INSTALL_SIGNALING=true
+				SHOULD_INSTALL_FIREWALLD=true
+			fi
 		fi
 	fi
 

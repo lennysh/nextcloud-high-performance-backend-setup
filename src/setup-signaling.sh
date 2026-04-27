@@ -99,7 +99,7 @@ function signaling_build_nss_fail() {
 }
 
 function signaling_ensure_epel_repos() {
-	# EPEL (and CRB / PowerTools on RHEL-family) for nats-server, coturn, janus, build tools.
+	# EPEL (and CRB / PowerTools on RHEL-family) for coturn, janus, build tools. NATS may be missing (EL 10+); see signaling_install_nats.
 	if is_dry_run; then
 		return 0
 	fi
@@ -117,6 +117,70 @@ function signaling_ensure_epel_repos() {
 	if rpm --quiet -q centos-stream-release 2>/dev/null || rpm --quiet -q redhat-release 2>/dev/null; then
 		dnf config-manager --set-enabled crb 2>/dev/null || dnf config-manager --set-enabled powertools 2>/dev/null || true
 	fi
+}
+
+# Prefer distro nats-server (e.g. EPEL 9). On EL 10+ the RPM is often missing — install upstream binary + our systemd unit.
+function signaling_install_nats() {
+	local dnf_params="${1:--y}"
+	if is_dry_run; then
+		log "Would install NATS Server (repository package or official binary)…"
+		return 0
+	fi
+	if dnf install $dnf_params nats-server 2>&1 | tee -a "$LOGFILE_PATH"; then
+		log "Installed nats-server from enabled repositories."
+		return 0
+	fi
+
+	log "The 'nats-server' package was not found in enabled repositories. Installing the official Linux build from GitHub (same as nats.io releases)…"
+	if [ -x /usr/local/bin/nats-server ]; then
+		log "Found existing /usr/local/bin/nats-server; refreshing config and unit…"
+	else
+		local tag arch url work binone
+		tag=$(curl -sL "https://api.github.com/repos/nats-io/nats-server/releases/latest" | jq -r ".tag_name // empty")
+		if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+			log_err "Could not read latest nats-server release from the GitHub API (need curl and jq, and outbound HTTPS)."
+			exit 1
+		fi
+		case "$(uname -m)" in
+		x86_64) arch=amd64 ;;
+		aarch64) arch=arm64 ;;
+		ppc64le) arch=ppc64le ;;
+		s390x) arch=s390x ;;
+		*)
+			log_err "No upstream nats.io Linux build mapping for: $(uname -m)"
+			exit 1
+			;;
+		esac
+		url="https://github.com/nats-io/nats-server/releases/download/${tag}/nats-server-${tag}-linux-${arch}.tar.gz"
+		work=$(mktemp -d) || exit 1
+		(
+			set -e
+			cd "$work" || exit 1
+			wget -nv "$url" -O nats-upstream.tgz
+			tar -xf nats-upstream.tgz
+			if [ -f ./nats-server ]; then
+				binone=./nats-server
+			else
+				binone=$(find . -name nats-server -type f -print -quit 2>/dev/null)
+			fi
+			[ -n "$binone" ] && [ -f "$binone" ] || exit 1
+			install -m 0755 "$binone" /usr/local/bin/nats-server
+		) 2>&1 | tee -a "$LOGFILE_PATH"
+		if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+			log_err "Failed to download or install the upstream nats-server binary from GitHub. See: $LOGFILE_PATH"
+			rm -rf "$work"
+			exit 1
+		fi
+		rm -rf "$work"
+		log "Installed nats-server (${tag}) to /usr/local/bin/nats-server"
+	fi
+
+	if ! getent passwd nats &>/dev/null; then
+		useradd -r -U -d /var/lib/nats -s /sbin/nologin nats 2>&1 | tee -a "$LOGFILE_PATH" || true
+	fi
+
+	deploy_file "$TMP_DIR_PATH"/signaling/nats-server.conf /etc/nats-server.conf || true
+	deploy_file "$TMP_DIR_PATH"/signaling/nats-server.service /lib/systemd/system/nats-server.service || true
 }
 
 function install_signaling() {
@@ -149,7 +213,7 @@ function install_signaling() {
 	is_dry_run "Would have built nextcloud-spreed-signaling now…" || signaling_build_nextcloud-spreed-signaling
 
 	log "Installing NATS, Janus RPM, and optional coturn…"
-	is_dry_run || dnf install $DNF_PARAMS nats-server 2>&1 | tee -a "$LOGFILE_PATH"
+	is_dry_run || signaling_install_nats "$DNF_PARAMS"
 	if [ "$SHOULD_INSTALL_COTURN" = true ]; then
 		is_dry_run || dnf install $DNF_PARAMS coturn 2>&1 | tee -a "$LOGFILE_PATH"
 	fi

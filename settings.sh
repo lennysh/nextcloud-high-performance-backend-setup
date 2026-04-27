@@ -62,10 +62,12 @@ SHOULD_INSTALL_CERTBOT=true
 # true = do not install nginx or Certbot here; terminate TLS on Traefik, Caddy,
 # etc. After a successful run, see tmp/reverse-proxy/ for a Traefik example.
 BEHIND_EXISTING_REVERSE_PROXY=false
-# [http] listen for nextcloud-spreed-signaling (host:port). Default 127.0.0.1:8080.
-# Use 0.0.0.0:port only if a remote reverse proxy must reach this host; restrict
-# access with firewalld or network ACLs.
+# [http] listen for nextcloud-spreed-signaling — must be host:port (not bare IP).
+# Default 127.0.0.1:8080 when Traefik/nginx is on this host.
+# Use 0.0.0.0:8080 only if a remote reverse proxy must reach this host; restrict
+# port 8080 with firewalld or network ACLs to the proxy IP.
 #SIGNALING_HTTP_LISTEN="127.0.0.1:8080"
+#SIGNALING_HTTP_LISTEN="0.0.0.0:8080"
 
 # ---------------------------------------------------------------------------
 # Optional TLS / key paths (empty = defaults under /etc/letsencrypt/live/…

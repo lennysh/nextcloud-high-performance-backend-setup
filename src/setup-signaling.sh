@@ -283,16 +283,32 @@ function signaling_build_janus_from_source() {
 		exit 1
 	}
 	log "Installing build dependencies for Janus…"
-	# EPEL+CRB provide *-devel; names follow RHEL 9+ / Alma 10.
+	# AppStream/CRB use RHEL names: 'opus-devel' (not libopus-devel), 'libsrtp-devel' (1.5.x) if libsrtp2 is absent.
+	# EPEL10 may not ship sofia-sip-devel — Talk does not need the SIP plugin; we pass --disable-plugin-sip.
 	# shellcheck disable=SC2086
 	if ! dnf install $DNF_PARAMS gcc gcc-c++ make automake autoconf libtool which pkgconf-pkg-config git \
 		jansson-devel glib2-devel libconfig-devel zlib-devel openssl-devel \
-		libcurl-devel libmicrohttpd-devel libwebsockets-devel libnice-devel libsrtp2-devel \
-		libogg-devel libopus-devel speex speexdsp-devel sofia-sip-devel \
+		libcurl-devel libmicrohttpd-devel libwebsockets-devel libnice-devel libsrtp-devel \
+		libogg-devel opus-devel speex speexdsp-devel \
 		gengetopt 2>&1 | tee -a "$LOGFILE_PATH"; then
 		log_err "Could not install Janus build dependencies. Enable EPEL, CRB/PowerTools, and try: dnf install <packages above>. See: $LOGFILE_PATH"
 		rm -rf "$work"
 		exit 1
+	fi
+	# Optional (improve SRTP 2 / SCTP data channels when packages exist in your repos).
+	# shellcheck disable=SC2086
+	dnf install $DNF_PARAMS libsrtp2-devel libusrsctp-devel 2>&1 | tee -a "$LOGFILE_PATH" || true
+
+	# Configure flags: Talk uses videoroom + WebSockets (no SIP stack). SRTP 1.5 is fine when SRTP2 is absent.
+	_JANUS_CONF="--prefix=/usr --sysconfdir=/etc --disable-plugin-sip"
+	if ! pkg-config --exists libsrtp2 2>/dev/null; then
+		_JANUS_CONF="$_JANUS_CONF --disable-libsrtp2"
+		log "Using libsrtp 1.x from libsrtp-devel (no pkg-config libsrtp2); Janus gets --disable-libsrtp2."
+	fi
+	# Optional second dnf may have failed; AC_CHECK_LIB needs libusrsctp at link time or --disable-data-channels.
+	if ! rpm -q libusrsctp-devel &>/dev/null; then
+		_JANUS_CONF="$_JANUS_CONF --disable-data-channels"
+		log "libusrsctp-devel not installed; pass --disable-data-channels (install it for SCTP data channels)."
 	fi
 
 	(
@@ -302,8 +318,8 @@ function signaling_build_janus_from_source() {
 		git clone --depth 1 -b "$JANUS_SOURCE_TAG" https://github.com/meetecho/janus-gateway.git
 		cd janus-gateway
 		./autogen.sh
-		# Disable extras that are not needed for the Talk/videoroom path and that often lack -devel on minimal EL.
-		./configure --prefix=/usr --sysconfdir=/etc
+		# shellcheck disable=SC2086
+		./configure $_JANUS_CONF
 		"$(command -v make)" -j"$(nproc)"
 		"$(command -v make)" install
 	) 2>&1 | tee -a "$LOGFILE_PATH"

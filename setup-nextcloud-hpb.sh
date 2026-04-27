@@ -517,19 +517,33 @@ function main() {
 
 	# Let's check if we should open dialogs.
 	if [ "$UNATTENDED_INSTALL" != true ]; then
+		# Preserve settings.sh defaults for TUI (reset below clears these).
+		_CHECKLIST_PRESET_COTURN="${SHOULD_INSTALL_COTURN:-false}"
 		SHOULD_INSTALL_FIREWALLD=false
 		SHOULD_INSTALL_SIGNALING=false
 		SHOULD_INSTALL_CERTBOT=false
 		SHOULD_INSTALL_NGINX=false
 		SHOULD_INSTALL_COTURN=false
 
+		CHK1_DEFAULT=ON
+		CHK2_DEFAULT=OFF
+		CHK3_DEFAULT=OFF
+		if [ "$BEHIND_EXISTING_REVERSE_PROXY" = true ]; then
+			CHK1_DEFAULT=OFF
+			CHK3_DEFAULT=ON
+		fi
+		if [ "$_CHECKLIST_PRESET_COTURN" = true ]; then
+			CHK2_DEFAULT=ON
+		fi
+
 		CHOICES=$(whiptail --title "Nextcloud Talk HPB (Enterprise Linux)" --separate-output \
 			--checklist "Core: signaling (built), NATS, Janus. nginx+Certbot OR Traefik/your proxy.\n$(
 			)firewalld opens HTTP/HTTPS when nginx is enabled (and coturn ports if selected).\n\n$(
-			)Optional: local coturn; optional: skip local TLS (external reverse proxy)." 20 90 3 \
-			"1" "Talk HPB + firewalld + nginx + Certbot on this host" ON \
-			"2" "Local coturn (TURN/STUN)" OFF \
-			"3" "Behind Traefik / external HTTPS (skip nginx & Certbot here)" OFF \
+			)Optional: local coturn; optional: skip local TLS (external reverse proxy).\n$(
+			)Checkmarks are prefilled from settings.sh when you passed it on the command line." 20 90 3 \
+			"1" "Talk HPB + firewalld + nginx + Certbot on this host" "$CHK1_DEFAULT" \
+			"2" "Local coturn (TURN/STUN)" "$CHK2_DEFAULT" \
+			"3" "Behind Traefik / external HTTPS (skip nginx & Certbot here)" "$CHK3_DEFAULT" \
 			3>&1 1>&2 2>&3 || true)
 
 		if [ -z "$CHOICES" ]; then

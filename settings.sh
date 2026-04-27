@@ -8,9 +8,8 @@
 # -------------------------
 # • UNATTENDED_INSTALL=false (default): the whiptail checklist controls what gets
 #   installed (SHOULD_INSTALL_* in this file for components are reset and ignored).
-#   You can still set domains, paths, and BEHIND_EXISTING_REVERSE_PROXY here if
-#   you do not use the interactive checklist for those — but the checklist always
-#   wins for the component toggles.
+#   BEHIND_EXISTING_REVERSE_PROXY and SHOULD_INSTALL_COTURN still pre-check the
+#   matching rows in the TUI; your selections in the checklist apply when you OK.
 # • UNATTENDED_INSTALL=true: no checklist; the SHOULD_INSTALL_* variables below
 #   must be set to describe the install. You must also set DRY_RUN, and every
 #   value that show_dialogs() would otherwise ask for (see “Required for

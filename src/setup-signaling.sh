@@ -21,6 +21,10 @@ declare -A SIGNALING_NC_SERVER_MAXSCREENBITRATE # Associative array
 
 # meetecho/janus-gateway release when no 'janus' RPM exists (typical on EL 10+).
 JANUS_SOURCE_TAG="v1.2.2"
+# Bump suffix when Janus ./configure flags for this project change (invalidates /var/lib/.../janus-built-from-source).
+JANUS_CACHE_ID="${JANUS_SOURCE_TAG}+usrsctp-required"
+# When no libusrsctp-devel RPM (common on EL 10), build this tag from https://github.com/sctplab/usrsctp before Janus.
+USRSCTP_SOURCE_TAG="0.9.5.0"
 
 # Helper function to check if a package needs rebuilding based on version
 # Usage: should_skip_build "marker_file" "current_version" "binary_path"
@@ -252,8 +256,9 @@ function signaling_install_janus() {
 	if is_dry_run; then
 		return 0
 	fi
-	if command -v janus &>/dev/null; then
-		log "Janus is already on PATH ($(command -v janus))."
+	# Only short-circuit for distro RPM; a source-built /usr/bin/janus must go through marker / rebuild logic.
+	if rpm -q janus &>/dev/null && command -v janus &>/dev/null; then
+		log "Janus RPM is installed ($(command -v janus))."
 		return 0
 	fi
 	if dnf install $dnf_params janus 2>&1 | tee -a "$LOGFILE_PATH"; then
@@ -262,15 +267,62 @@ function signaling_install_janus() {
 	fi
 
 	if [ -f /var/lib/nextcloud-hpb-setup/janus-built-from-source ] \
-		&& [ "$(tr -d '\n' </var/lib/nextcloud-hpb-setup/janus-built-from-source 2>/dev/null)" = "$JANUS_SOURCE_TAG" ] \
+		&& [ "$(tr -d '\n' </var/lib/nextcloud-hpb-setup/janus-built-from-source 2>/dev/null)" = "$JANUS_CACHE_ID" ] \
 		&& [ -x /usr/bin/janus ]; then
-		log "Using previously built Janus at /usr/bin/janus (tag $JANUS_SOURCE_TAG)."
+		log "Using previously built Janus at /usr/bin/janus ($JANUS_CACHE_ID)."
 		is_dry_run || deploy_file "$TMP_DIR_PATH"/signaling/janus.service /lib/systemd/system/janus.service || true
 		return 0
 	fi
 
 	log "No 'janus' package in your repositories; building Janus $JANUS_SOURCE_TAG from source (takes several minutes)…"
 	signaling_build_janus_from_source
+}
+
+# Janus + nextcloud-spreed-signaling need SCTP data channels; that needs libusrsctp at link time.
+function signaling_ensure_usrsctp_for_janus() {
+	if is_dry_run; then
+		return 0
+	fi
+	if rpm -q libusrsctp-devel &>/dev/null; then
+		return 0
+	fi
+	if pkg-config --exists libusrsctp 2>/dev/null; then
+		log "libusrsctp found via pkg-config; skipping vendored usrsctp build."
+		return 0
+	fi
+	if [[ -f /usr/include/usrsctp.h ]] \
+		&& find /usr/lib64 /usr/lib -maxdepth 1 \( -name 'libusrsctp.so' -o -name 'libusrsctp.so.*' \) -print -quit 2>/dev/null | grep -q .; then
+		log "libusrsctp headers and library present; skipping vendored usrsctp build."
+		return 0
+	fi
+	local udir
+	udir=$(mktemp -d "${TMPDIR:-/tmp}/usrsctp-build.XXXXXX") || {
+		log_err "Could not create a temp build directory for usrsctp."
+		exit 1
+	}
+	log "No libusrsctp-devel in repositories; building usrsctp $USRSCTP_SOURCE_TAG from source (for Janus data channels)…"
+	(
+		set -e
+		cd "$udir"
+		git clone --depth 1 -b "$USRSCTP_SOURCE_TAG" https://github.com/sctplab/usrsctp.git
+		cd usrsctp
+		./bootstrap
+		./configure --prefix=/usr --libdir=/usr/lib64
+		"$(command -v make)" -j"$(nproc)"
+		"$(command -v make)" install
+	) 2>&1 | tee -a "$LOGFILE_PATH"
+	if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+		log_err "usrsctp build or install failed. Janus requires libusrsctp for Talk signaling. See: $LOGFILE_PATH"
+		rm -rf "$udir"
+		exit 1
+	fi
+	rm -rf "$udir"
+	ldconfig 2>/dev/null || true
+	if ! find /usr/lib64 /usr/lib -maxdepth 1 \( -name 'libusrsctp.so' -o -name 'libusrsctp.so.*' \) -print -quit 2>/dev/null | grep -q .; then
+		log_err "usrsctp installed but libusrsctp.so not found under /usr/lib64 or /usr/lib."
+		exit 1
+	fi
+	log "usrsctp $USRSCTP_SOURCE_TAG installed under /usr."
 }
 
 function signaling_build_janus_from_source() {
@@ -295,9 +347,12 @@ function signaling_build_janus_from_source() {
 		rm -rf "$work"
 		exit 1
 	fi
-	# Optional (improve SRTP 2 / SCTP data channels when packages exist in your repos).
+	# Install separately: a single "dnf A B" fails entirely if A is missing, and nextcloud-spreed-signaling
+	# requires Janus *with* SCTP data channels (MCU init fails otherwise; HTTP listen may never start).
 	# shellcheck disable=SC2086
-	dnf install $DNF_PARAMS libsrtp2-devel libusrsctp-devel 2>&1 | tee -a "$LOGFILE_PATH" || true
+	dnf install $DNF_PARAMS libusrsctp-devel 2>&1 | tee -a "$LOGFILE_PATH" || true
+	# shellcheck disable=SC2086
+	dnf install $DNF_PARAMS libsrtp2-devel 2>&1 | tee -a "$LOGFILE_PATH" || true
 
 	# Configure flags: Talk uses videoroom + WebSockets (no SIP stack). SRTP 1.5 is fine when SRTP2 is absent.
 	_JANUS_CONF="--prefix=/usr --sysconfdir=/etc --disable-plugin-sip"
@@ -305,11 +360,7 @@ function signaling_build_janus_from_source() {
 		_JANUS_CONF="$_JANUS_CONF --disable-libsrtp2"
 		log "Using libsrtp 1.x from libsrtp-devel (no pkg-config libsrtp2); Janus gets --disable-libsrtp2."
 	fi
-	# Optional second dnf may have failed; AC_CHECK_LIB needs libusrsctp at link time or --disable-data-channels.
-	if ! rpm -q libusrsctp-devel &>/dev/null; then
-		_JANUS_CONF="$_JANUS_CONF --disable-data-channels"
-		log "libusrsctp-devel not installed; pass --disable-data-channels (install it for SCTP data channels)."
-	fi
+	signaling_ensure_usrsctp_for_janus
 
 	(
 		set -e
@@ -331,7 +382,7 @@ function signaling_build_janus_from_source() {
 	ldconfig 2>/dev/null || true
 	rm -rf "$work"
 	is_dry_run || mkdir -p /var/lib/nextcloud-hpb-setup
-	is_dry_run || echo -n "$JANUS_SOURCE_TAG" >/var/lib/nextcloud-hpb-setup/janus-built-from-source
+	is_dry_run || echo -n "$JANUS_CACHE_ID" >/var/lib/nextcloud-hpb-setup/janus-built-from-source
 	log "Janus $JANUS_SOURCE_TAG installed to /usr/bin/janus"
 	is_dry_run || deploy_file "$TMP_DIR_PATH"/signaling/janus.service /lib/systemd/system/janus.service || true
 }

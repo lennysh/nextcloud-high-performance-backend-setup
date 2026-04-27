@@ -19,6 +19,9 @@ declare -A SIGNALING_NC_SERVER_SESSIONLIMIT     # Associative array
 declare -A SIGNALING_NC_SERVER_MAXSTREAMBITRATE # Associative array
 declare -A SIGNALING_NC_SERVER_MAXSCREENBITRATE # Associative array
 
+# meetecho/janus-gateway release when no 'janus' RPM exists (typical on EL 10+).
+JANUS_SOURCE_TAG="v1.2.2"
+
 # Helper function to check if a package needs rebuilding based on version
 # Usage: should_skip_build "marker_file" "current_version" "binary_path"
 # Returns 0 (true) if build should be skipped, 1 (false) if build is needed
@@ -114,7 +117,8 @@ function signaling_ensure_epel_repos() {
 			dnf install -y epel-release 2>&1 | tee -a "$LOGFILE_PATH" || true
 		fi
 	fi
-	if rpm --quiet -q centos-stream-release 2>/dev/null || rpm --quiet -q redhat-release 2>/dev/null; then
+	if rpm --quiet -q centos-stream-release 2>/dev/null || rpm --quiet -q redhat-release 2>/dev/null \
+		|| rpm --quiet -q almalinux-release 2>/dev/null || rpm --quiet -q rocky-release 2>/dev/null; then
 		dnf config-manager --set-enabled crb 2>/dev/null || dnf config-manager --set-enabled powertools 2>/dev/null || true
 	fi
 }
@@ -218,7 +222,7 @@ function install_signaling() {
 		is_dry_run || dnf install $DNF_PARAMS coturn 2>&1 | tee -a "$LOGFILE_PATH"
 	fi
 
-	is_dry_run "Would have installed Janus now…" || signaling_install_janus_rpm "$DNF_PARAMS"
+	is_dry_run "Would have installed Janus now…" || signaling_install_janus "$DNF_PARAMS"
 
 	log "Reloading systemd."
 	is_dry_run || systemctl daemon-reload | tee -a "$LOGFILE_PATH"
@@ -241,21 +245,79 @@ function install_signaling() {
 	log "Signaling install completed."
 }
 
-function signaling_install_janus_rpm() {
-	local dnf_args="$1"
-	[ -z "$dnf_args" ] && dnf_args="-y"
+# Prefer RPM (EPEL, etc.); on EL 10+ there is often no janus package — build from meetecho/janus-gateway.
+function signaling_install_janus() {
+	local dnf_params="${1:--y}"
+	[ -z "$dnf_params" ] && dnf_params="-y"
 	if is_dry_run; then
 		return 0
 	fi
 	if command -v janus &>/dev/null; then
-		log "Janus is already installed."
+		log "Janus is already on PATH ($(command -v janus))."
 		return 0
 	fi
-	log "Installing Janus from enabled repositories (EPEL provides janus on many Enterprise Linux releases)…"
-	if ! dnf install $dnf_args janus 2>&1 | tee -a "$LOGFILE_PATH"; then
-		log_err "Could not install the 'janus' package. Install/enable EPEL (see README) and ensure a Janus build exists for your OS version."
+	if dnf install $dnf_params janus 2>&1 | tee -a "$LOGFILE_PATH"; then
+		log "Installed Janus from enabled repositories."
+		return 0
+	fi
+
+	if [ -f /var/lib/nextcloud-hpb-setup/janus-built-from-source ] \
+		&& [ "$(tr -d '\n' </var/lib/nextcloud-hpb-setup/janus-built-from-source 2>/dev/null)" = "$JANUS_SOURCE_TAG" ] \
+		&& [ -x /usr/bin/janus ]; then
+		log "Using previously built Janus at /usr/bin/janus (tag $JANUS_SOURCE_TAG)."
+		is_dry_run || deploy_file "$TMP_DIR_PATH"/signaling/janus.service /lib/systemd/system/janus.service || true
+		return 0
+	fi
+
+	log "No 'janus' package in your repositories; building Janus $JANUS_SOURCE_TAG from source (takes several minutes)…"
+	signaling_build_janus_from_source
+}
+
+function signaling_build_janus_from_source() {
+	if is_dry_run; then
+		return 0
+	fi
+	local work
+	work=$(mktemp -d "${TMPDIR:-/tmp}/janus-gw-build.XXXXXX") || {
+		log_err "Could not create a temp build directory for Janus."
+		exit 1
+	}
+	log "Installing build dependencies for Janus…"
+	# EPEL+CRB provide *-devel; names follow RHEL 9+ / Alma 10.
+	# shellcheck disable=SC2086
+	if ! dnf install $DNF_PARAMS gcc gcc-c++ make automake autoconf libtool which pkgconf-pkg-config git \
+		jansson-devel glib2-devel libconfig-devel zlib-devel openssl-devel \
+		libcurl-devel libmicrohttpd-devel libwebsockets-devel libnice-devel libsrtp2-devel \
+		libogg-devel libopus-devel speex speexdsp-devel sofia-sip-devel \
+		gengetopt 2>&1 | tee -a "$LOGFILE_PATH"; then
+		log_err "Could not install Janus build dependencies. Enable EPEL, CRB/PowerTools, and try: dnf install <packages above>. See: $LOGFILE_PATH"
+		rm -rf "$work"
 		exit 1
 	fi
+
+	(
+		set -e
+		cd "$work"
+		# --depth 1: shallow clone; tag must exist on GitHub.
+		git clone --depth 1 -b "$JANUS_SOURCE_TAG" https://github.com/meetecho/janus-gateway.git
+		cd janus-gateway
+		./autogen.sh
+		# Disable extras that are not needed for the Talk/videoroom path and that often lack -devel on minimal EL.
+		./configure --prefix=/usr --sysconfdir=/etc
+		"$(command -v make)" -j"$(nproc)"
+		"$(command -v make)" install
+	) 2>&1 | tee -a "$LOGFILE_PATH"
+	if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+		log_err "Janus build or install failed. See config.log in the build tree if present and: $LOGFILE_PATH"
+		rm -rf "$work"
+		exit 1
+	fi
+	ldconfig 2>/dev/null || true
+	rm -rf "$work"
+	is_dry_run || mkdir -p /var/lib/nextcloud-hpb-setup
+	is_dry_run || echo -n "$JANUS_SOURCE_TAG" >/var/lib/nextcloud-hpb-setup/janus-built-from-source
+	log "Janus $JANUS_SOURCE_TAG installed to /usr/bin/janus"
+	is_dry_run || deploy_file "$TMP_DIR_PATH"/signaling/janus.service /lib/systemd/system/janus.service || true
 }
 
 function signaling_build_nextcloud-spreed-signaling() {
@@ -341,6 +403,18 @@ function signaling_build_nextcloud-spreed-signaling() {
 		echo "$NSS_VERSION" > "$NSS_BUILD_MARKER"
 		log "[Building n-s-s] Marked version $NSS_VERSION as built in $NSS_BUILD_MARKER"
 	fi
+}
+
+function signaling_fix_janus_plugin_paths_for_enterprise_linux() {
+	# After Janus is installed (RPM or from source), plugin libraries live under /usr/lib64/janus on Enterprise Linux.
+	[ -d /usr/lib64/janus ] || return 0
+	local jf
+	for jf in "$TMP_DIR_PATH"/signaling/janus.jcfg "$TMP_DIR_PATH"/signaling/janus_aarch64.jcfg "$TMP_DIR_PATH"/signaling/janus_powerpc64le.jcfg; do
+		[ -f "$jf" ] || continue
+		sed -i 's|/usr/lib/x86_64-linux-gnu/janus|/usr/lib64/janus|g' "$jf"
+		sed -i 's|/usr/lib/aarch64-linux-gnu/janus|/usr/lib64/janus|g' "$jf"
+		sed -i 's|/usr/lib/powerpc64le-linux-gnu/janus|/usr/lib64/janus|g' "$jf"
+	done
 }
 
 function signaling_step4() {
@@ -493,6 +567,9 @@ function signaling_step4() {
 
 	log "Replacing '<SIGNALING_COTURN_EXTERN_IPV6>' with '$EXTERNAL_IPV6'…"
 	sed -i "s|<SIGNALING_COTURN_EXTERN_IPV6>|$EXTERNAL_IPV6|g" "$TMP_DIR_PATH"/signaling/*
+
+	# Templates use Debian multilib paths; RHEL/Alma/Rocky/Fedora use /usr/lib64/janus.
+	signaling_fix_janus_plugin_paths_for_enterprise_linux
 }
 
 function signaling_step5() {

@@ -1,0 +1,16 @@
+[Unit]
+Description=Janus WebRTC Server
+Documentation=https://janus.conf.meetecho.com/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Matches typical EPEL layouts; "install from source" path uses the same /usr tree.
+ExecStart=/usr/bin/janus -F
+Restart=on-failure
+RestartSec=3s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
